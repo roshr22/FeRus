@@ -32,6 +32,31 @@ pub struct UniformRange {
 	max: BigInt,
 }
 
+#[pyfunction]
+fn check_bound(v: Vector, bound: Bound<'_, PyInt>) -> PyResult<bool> {
+    let bound: BigInt = bound.extract()?;
+    for value in v.iter() {
+        if value > &bound {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+#[pyfunction]
+fn dot(v1: Vector, v2: Vector, py: Python<'_>) -> Bound<'_, PyInt> {
+    if v1.len() != v2.len() {
+        panic!("Vectors must be of the same length");
+    }
+
+    let mut result = BigInt::from(0);
+    for (a, b) in v1.iter().zip(v2.iter()) {
+        result += a * b;
+    }
+
+    result.into_pyobject(py).unwrap()
+}
+
 #[pymethods]
 impl UniformRange {
     #[new]
@@ -71,8 +96,6 @@ impl Ddh {
     fn new_ddh_precomp(py: Python<'_>, l: Bound<'_, PyInt>, modulus_length:usize, bound: Bound<'_, PyInt>) -> PyResult<Self> {
         let one = BigInt::from(1);
         let two = BigInt::from(2);
-        let g : BigInt;
-        let p : BigInt;
         let (g,p) = match modulus_length {
             1024 => (BigInt::from_str("34902160241479276675539633849372382885917193816560610471607073855548755350834003692485735908635894317735639518678334280193650806072183057417077181724192674928134805218882803812978345229222559213790765817899845072682155064387311523738581388872686127675360979304234957611566801734164757915959042140104663977828").expect("invalid big int literal"), 
             BigInt::from_str("166211269243229118758738154756726384542659478479960313411107431885216572625212662756677338184675400324411541201832214281445670912135683272416408753424543622705770319923251281963485084208425069817917631106045349238686234860629044433560424091289406000897029571960128048529362925472176997104870527051276406995203").expect("invalid big int literal")),
@@ -121,6 +144,46 @@ impl Ddh {
             master_pub_key.push(y);
         }
         (master_sec_key, master_pub_key)
+    }
+
+    fn derive_key<'py>(&self, master_sec_key: Vector, y: Vector, py: Python<'py>) -> Bound<'py, PyInt> {
+        let bound = (self.params.bound.clone()).into_pyobject(py).unwrap();
+        if check_bound(y.clone(), bound).unwrap() == false {
+            panic!("y values are not within the specified bound");
+        }
+
+        let derived_key = dot(master_sec_key.clone(), y.clone(), py).into_pyobject(py).unwrap();
+        derived_key
+    }
+
+    fn encrypt<'py>(&self, x: Vector, master_pub_key: Vector, py: Python<'py>) -> Vector {
+        let bound = (self.params.bound.clone()).into_pyobject(py).unwrap();
+        if check_bound(x.clone(), bound).unwrap() == false {
+            panic!("y values are not within the specified bound");
+        }
+
+        let zero = BigInt::from(0);
+        let q = (self.params.q.clone()).into_pyobject(py).unwrap();
+        let sampler = UniformRange::new(PyInt::new(py, 2), q).unwrap();
+
+        let r: BigInt = UniformRange::sample(&sampler, py).extract::<BigInt>().unwrap();
+
+        let mut ciphertext: Vector = Vec::new();
+
+        ciphertext[0] = (&self.params.g).modpow(&r, &self.params.p);
+        for i in 0..x.len() {
+            let t1 = (master_pub_key[i].clone()).modpow(&r, &self.params.p);
+            let t2:BigInt = if x[i] < zero {
+                let x  = -(x[i].clone());
+                (&self.params.g).modpow(&x, &self.params.p).modinv(&self.params.p).expect("Inverse does not exist")
+            } else {
+                (&self.params.g).modpow(&x[i], &self.params.p)
+            };
+            let t = t1 * t2;
+            ciphertext[i+1] = t % &self.params.p;
+        }
+
+        ciphertext
     }
 }
 
