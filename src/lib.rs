@@ -8,6 +8,7 @@ use num_traits::ToPrimitive;
 use crossbeam::channel;
 use std::collections::HashMap;
 use hex;
+use num_integer::Integer;
 
 type Vector = Vec<BigInt>;
 
@@ -100,60 +101,75 @@ fn in_zp(p: BigInt, order: BigInt) -> CalcZp {
     }
 }
 
-pub fn baby_step_giant_step(calc: CalcZp, h: BigInt, g: BigInt, ) -> Result<BigInt, String> {
+pub fn baby_step_giant_step(calc: CalcZp, h: BigInt, g: BigInt, ) -> Result<BigInt, String> {    
     let zero = BigInt::from(0);
     let one = BigInt::from(1);
     let two = BigInt::from(2);
     let (tx, rx) = channel::unbounded::<Result<BigInt, String>>();
 
+    // First attempt with g
+    let mut found = false;  // Add this to track if we found a solution
     let mut t: HashMap<String, BigInt> = HashMap::new();
     let mut x = one.clone();
     let mut y = h.clone();
     let mut z = g.modinv(&calc.p).expect("Inverse does not exist");
     z = z.modpow(&two, &calc.p);
-    let bitlen: u32 = x.bits().to_u32().expect("bitlen too large for u32");
+    let bitlen: u32 = calc.bound.bits().to_u32().expect("bitlen too large for u32");  // Use calc.bound instead of x
 
     let key = hex::encode(x.clone().to_bytes_be().1); 
     t.insert(key.clone(), zero.clone());
-    x = x * g.clone() % &calc.p;
+    x = (x * g.clone()).mod_floor(&calc.p);
     let mut j = zero.clone();
     let mut giant_step = BigInt::from(0);
     let mut bound = BigInt::from(0);
 
+    // First attempt loop
     for i in 0..bitlen {
+        if found { break; }  // Exit loop if we found a solution
+
         giant_step = two.pow(i+1);
-        if giant_step>calc.m{
+        if giant_step > calc.m {
             giant_step = calc.m.clone();
             z = g.modinv(&calc.p).expect("Inverse does not exist");
             z = z.clone().modpow(&calc.m, &calc.p);
         }
 
-        let i_big = BigInt::from(i);
         let val = two.pow(i);
         let mut k = val.clone();
         while k < giant_step {
             let key = hex::encode(x.clone().to_bytes_be().1); 
             t.insert(key, k.clone());
-            x = (x*g.clone())%calc.p.clone();
+            x = (x*g.clone()).mod_floor(&calc.p);
             k = k + one.clone();
         }
 
         bound = two.pow(2*(i+1));
         while j < bound {
-            if let Some(e) = t.get(&key) {
-                let result = j.clone() + e;
+            let current_key = hex::encode(y.clone().to_bytes_be().1);
+            if let Some(e) = t.get(&current_key) {
+                let result = j.clone() + e.clone();
                 tx.send(Ok(result)).unwrap();
+                found = true;  // Mark as found
                 break;
             }
-            y = y * z.clone() % &calc.p;
+            y = (y.clone() * z.clone()).mod_floor(&calc.p);
             j = j + giant_step.clone();
         }
-        z = z.modpow(&two, &calc.p);
+        
+        if !found {
+            z = z.modpow(&two, &calc.p);
+        }
     }
-    tx.send(Err("failed to find the discrete logarithm within bound".to_string())).unwrap();
+    
+    // Only send error if we didn't find anything
+    if !found {
+        tx.send(Err("failed to find the discrete logarithm within bound".to_string())).unwrap();
+    }
 
+    // Second attempt with g^-1
+    found = false;  // Reset flag
     let mut ginv = g.clone().modinv(&calc.p).expect("Inverse does not exist");
-
+    
     let mut t: HashMap<String, BigInt> = HashMap::new();
     x = one.clone();
     y = h.clone();
@@ -163,12 +179,14 @@ pub fn baby_step_giant_step(calc: CalcZp, h: BigInt, g: BigInt, ) -> Result<BigI
 
     let key = hex::encode(x.to_bytes_be().1); 
     t.insert(key.clone(), zero.clone());
-    let x = x * ginv.clone() % &calc.p;
+    x = (x * ginv.clone()).mod_floor(&calc.p);
     let mut j = zero.clone();
     let mut giant_step = BigInt::from(0);
     let mut bound = BigInt::from(0);
 
     for i in 0..bitlen {
+        if found { break; }  // Exit loop if we found a solution
+
         giant_step = two.pow(i+1);
         if giant_step>calc.m{
             giant_step = calc.m.clone();
@@ -182,43 +200,60 @@ pub fn baby_step_giant_step(calc: CalcZp, h: BigInt, g: BigInt, ) -> Result<BigI
         while k < giant_step {
             let key = hex::encode(x.to_bytes_be().1); 
             t.insert(key, k.clone());
-            let x = (x.clone()*ginv.clone())%calc.p.clone();
+            x = (x.clone()*ginv.clone()).mod_floor(&calc.p.clone());
             k = k.clone() + one.clone();
         }
 
         bound = two.pow(2*(i+1));
         while j < bound {
-            if let Some(e) = t.get(&key) {
+            let current_key = hex::encode(y.clone().to_bytes_be().1);
+            if let Some(e) = t.get(&current_key) {
                 let result = j.clone() + e;
                 tx.send(Ok(result)).unwrap();
+                found = true;  // Mark as found
                 break;
             }
-            let y = y.clone() * z.clone() % &calc.p;
+            y = (y.clone() * z.clone()).mod_floor(&calc.p);
             j = j + giant_step.clone();
         }
-        let z = z.modpow(&two, &calc.p);
-    }
-    tx.send(Err("failed to find the discrete logarithm within bound".to_string())).unwrap();
-
-    let res1 = rx.recv().unwrap();
-    let res2 = rx.recv().unwrap();
-
-    let mut ret = match (res1, res2) {
-        (Ok(val), _) => val,
-        (_, Ok(val)) => val,
-        (Err(e1), Err(e2)) => {
-            return Err(format!(
-                "Both attempts failed:\n - {}\n - {}",
-                e1, e2
-            ));
+        
+        if !found {
+            z = z.modpow(&two, &calc.p);
         }
-    };
-
-    let g_pow = g.modpow(&ret, &calc.p);
-    if g_pow != h {
-        ret = -ret;
     }
-    Ok(ret)
+    
+    // Only send error if we didn't find anything
+    if !found {
+        tx.send(Err("failed to find the discrete logarithm within bound".to_string())).unwrap();
+    }
+
+    // Process results
+    let res1 = rx.recv().unwrap();
+    match res1 {
+        Ok(val) => {
+            // Test if g^val = h mod p
+            let g_pow = g.modpow(&val, &calc.p);
+            let diff = if g_pow == h { 
+                val 
+            } else { 
+                -val 
+            };
+            return Ok(diff);
+        },
+        Err(_) => {
+            // If first failed, try second
+            let res2 = rx.recv().unwrap();
+            match res2 {
+                Ok(val) => {
+                    let g_pow = g.modpow(&val, &calc.p);
+                    return Ok(if g_pow == h { val } else { -val });
+                },
+                Err(e2) => {
+                    return Err(format!("Both attempts failed: {}", e2));
+                }
+            }
+        }
+    }
 }
 
 // Create a new ddh struct.
@@ -313,7 +348,7 @@ impl Ddh {
 
         let r: BigInt = UniformRange::sample(&sampler, py).extract::<BigInt>().unwrap();
 
-        let mut ciphertext: Vector = Vec::new();
+        let mut ciphertext: Vector = Vec::with_capacity(x.len() + 1);
 
         ciphertext.push((&self.params.g).modpow(&r, &self.params.p));
         for i in 0..x.len() {
@@ -325,7 +360,7 @@ impl Ddh {
                 (&self.params.g).modpow(&x[i], &self.params.p)
             };
             let t = t1 * t2;
-            ciphertext.push(t % &self.params.p);
+            ciphertext.push(t.mod_floor(&self.params.p));
         }
 
         ciphertext
@@ -336,6 +371,11 @@ impl Ddh {
         let key: BigInt = key.extract().unwrap();
         let zero = BigInt::from(0);
 
+        // Fix for vector length mismatch - skip the first element in ciphertext
+        let ciphertext_without_first = ciphertext.iter().skip(1).cloned().collect::<Vec<_>>();
+        println!("Ciphertext length: {}, y length: {}", ciphertext.len(), y.len());
+        println!("Expected inner product: {}", dot(y.clone(), ciphertext_without_first, py));
+        
         let mut num = BigInt::from(1);
         for (i, ct) in ciphertext.iter().skip(1).enumerate() {
             let t1 = if y[i] < zero {
@@ -344,7 +384,7 @@ impl Ddh {
             } else {
                 ct.modpow(&y[i], &self.params.p)
             }; 
-            num = (&num * &t1) % self.params.p.clone();
+            num = (&num * &t1).mod_floor(&self.params.p.clone());
         }
 
         let denom:BigInt = if key < zero {
@@ -354,9 +394,8 @@ impl Ddh {
             (ciphertext[0]).modpow(&key, &self.params.p)
         };
         let denom_inv = denom.modinv(&self.params.p).expect("Inverse does not exist");
-        let r = num * denom_inv % &self.params.p;
-        let bound = &self.params.l * &self.params.bound.pow(2u32);
-
+        let r = (num * denom_inv).mod_floor(&self.params.p);
+        
         let c = in_zp(self.params.p.clone(), self.params.q.clone());
         let decrypted = baby_step_giant_step(c, r, self.params.g.clone()).expect("Failed to find discrete logarithm");
         decrypted.into_pyobject(py).unwrap()

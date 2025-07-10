@@ -2,14 +2,13 @@ from ddhlib import Ddh
 from random import randint
 
 # === Step 1: Setup FE Scheme ===
-# Using safe precomputed params (1536-bit for example)
 l = 3  # vector length
-bound = 10  # absolute value limit for each vector element
+bound = 100000  # absolute value limit for each vector element
 
-fe = Ddh.new_ddh_precomp(l, 1536, bound)
+fe = Ddh.new_ddh_precomp(l, 1536, bound)  # returns an instance
 
 # === Step 2: Generate Keys ===
-msk, mpk = Ddh.generate_master_keys(fe)
+msk, mpk = fe.generate_master_keys()
 print("Master Secret Key:", msk)
 print("Master Public Key:", mpk)
 
@@ -21,15 +20,15 @@ print("Plaintext x:", x)
 print("Policy vector y:", y)
 
 # === Step 4: Encrypt x ===
-ciphertext = Ddh.encrypt(fe, x, mpk)
+ciphertext = fe.encrypt(x, mpk)
 print("Ciphertext:", ciphertext)
 
 # === Step 5: Derive functional key for y ===
-key = Ddh.derive_key(fe, msk, y)
+key = fe.derive_key(msk, y)
 print("Derived Key (⟨msk, y⟩):", key)
 
 # === Step 6: Decrypt to get ⟨x, y⟩ ===
-decrypted_inner_product = Ddh.decrypt(fe, ciphertext, key, y)
+decrypted_inner_product = fe.decrypt(ciphertext, key, y)
 print("Decrypted inner product:", decrypted_inner_product)
 
 # === Step 7: Verify correctness ===

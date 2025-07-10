@@ -77,6 +77,7 @@ dependencies = [
  "crossbeam",
  "hex",
  "num-bigint",
+ "num-integer",
  "num-traits",
  "pyo3",
  "rand",
