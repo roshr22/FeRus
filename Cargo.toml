@@ -12,5 +12,7 @@ pyo3 = { version = "0.25.1", features = ["extension-module", "num-bigint"] }
 num-bigint = { version = "*", features = ["rand"] }
 num-traits = "0.2"
 rand = "0.8"
+crossbeam = "0.8"
+hex = "0.4"
 
 [build-dependencies]
